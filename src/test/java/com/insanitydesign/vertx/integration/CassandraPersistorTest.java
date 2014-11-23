@@ -11,6 +11,9 @@ import java.nio.ByteBuffer;
 import java.text.Format;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import javax.xml.bind.DatatypeConverter;
 
@@ -65,6 +68,7 @@ public class CassandraPersistorTest extends TestVerticle {
 		config.putString("retry", "fallthrough");
 		config.putObject("reconnection", new JsonObject().putString("policy", "constant").putNumber("delay", 1000));
 		config.putNumber("prepStmtCacheSize", 1);
+		config.putNumber("batchTimeout", 10);
 
 		//
 		container.logger().info("[Cassandra Persistor Test] Starting test of module " + System.getProperty("vertx.modulename"));
@@ -552,5 +556,168 @@ public class CassandraPersistorTest extends TestVerticle {
 				}
 			}
 		});
+	}
+	
+	
+	/**
+	 * 
+	 */
+	@Test
+	public void testBatchActions() {
+		//
+		JsonArray batchedActions = new JsonArray();
+
+		//
+		JsonObject statement1 = new JsonObject();
+		statement1.putString("action", "prepare");
+		statement1.putString("statement", "INSERT INTO vertxpersistor.fulltable (id, date, isValid) VALUES(?, ?, ?)");
+		//
+		JsonObject statement2 = new JsonObject();
+		statement2.putString("action", "raw");
+		statement2.putString("statement", "SELECT * FROM vertxpersistor.fulltable WHERE id = 156716f7-2e54-4715-9f00-91aaaea6cf50");
+		//
+		batchedActions.add(statement1);
+		batchedActions.add(statement2);
+
+		//
+		vertx.eventBus().send("vertx.cassandra.persistor.batch", batchedActions, new Handler<Message<JsonObject>>() {
+			/**
+			 * 
+			 */
+			@Override
+			public void handle(Message<JsonObject> reply) {
+				//
+				try {
+					container.logger().info("[" + getClass().getName() + "] Reply Body: " + reply.body());
+
+					// Tests
+					assertNotNull(reply);
+					assertNotNull(reply.body());
+					assertThat(reply.body(), instanceOf(JsonArray.class));
+
+				} catch(Exception e) {
+					e.printStackTrace();
+
+				} finally {
+					testComplete();
+				}
+			}
+		});
+	}
+	
+	
+	/**
+	 * 
+	 */
+	@Test
+	public void testBrokenBatchAction() {
+		//
+		JsonArray batchedActions = new JsonArray();
+
+		//
+		JsonObject statement1 = new JsonObject();
+		statement1.putString("action", "broken");
+		statement1.putString("statement", "INSERT INTO vertxpersistor.fulltable (id, date, isValid) VALUES(?, ?, ?)");
+		//
+		JsonObject statement2 = new JsonObject();
+		statement2.putString("action", "raw");
+		statement2.putString("statement", "SELECT * FROM vertxpersistor.fulltable WHERE id = 156716f7-2e54-4715-9f00-91aaaea6cf50");
+		//
+		batchedActions.add(statement1);
+		batchedActions.add(statement2);
+
+		//
+		vertx.eventBus().send("vertx.cassandra.persistor.batch", batchedActions, new Handler<Message<JsonObject>>() {
+			/**
+			 * 
+			 */
+			@Override
+			public void handle(Message<JsonObject> reply) {
+				//
+				try {
+					container.logger().info("[" + getClass().getName() + "] Reply Body: " + reply.body());
+
+					// Tests
+					assertNotNull(reply);
+					assertNotNull(reply.body());
+					assertThat(reply.body(), instanceOf(JsonArray.class));
+
+				} catch(Exception e) {
+					e.printStackTrace();
+
+				} finally {
+					testComplete();
+				}
+			}
+		});
+	}
+	
+	/**
+	 * 
+	 */
+	@Test
+	public void testMultiProcesses() {
+		//
+		final int testAmount = 50;
+		
+		//
+		Format format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+		//
+		final JsonObject insert = new JsonObject();
+		insert.putString("action", "prepared");
+		insert.putString("statement", "INSERT INTO vertxpersistor.fulltable (id, key, value, number, date) VALUES(?, ?, ?, ?, ?)");
+		//
+		JsonArray values1 = new JsonArray();
+		values1.addString("cefcefce-2e54-4715-9f00-91dcbea6cf50");
+		values1.addString("Unit1");
+		values1.addString("Test1");
+		values1.addNumber(2014);
+		values1.addString(format.format(new Date()));
+		//
+		JsonArray values = new JsonArray();
+		values.addArray(values1);
+		//
+		insert.putArray("values", values);
+		
+		//
+		ExecutorService executor = Executors.newFixedThreadPool(10);
+		for(int i = 0; i < testAmount; i++) {
+			executor.submit(new Runnable() {			
+				@Override
+				public void run() {
+					vertx.eventBus().send("vertx.cassandra.persistor", insert, new Handler<Message<JsonObject>>() {
+						@Override
+						public void handle(Message<JsonObject> reply) {
+							System.out.println("[" + getClass().getName() + "] Reply Body: " + reply.body() + " @" + new Date());
+							
+							try {
+								// Basic Tests
+								assertNotNull(reply);
+								assertNotNull(reply.body());
+								assertEquals("ok", reply.body().getString("status"));
+
+							} catch(Exception e) {
+								e.printStackTrace();
+							}
+						}
+					});
+				}
+			});
+		}
+		
+		//
+		try {
+			//Close down all submitted threads
+			executor.shutdown();
+			//but wait a maximum of 30 seconds before terminating the test
+			executor.awaitTermination(30000, TimeUnit.SECONDS);
+			
+		} catch(InterruptedException e) {
+			e.printStackTrace();
+			
+		} finally {
+			testComplete();
+		}
 	}
 }

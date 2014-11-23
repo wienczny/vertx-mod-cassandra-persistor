@@ -14,7 +14,6 @@ import org.vertx.java.core.json.JsonArray;
 import org.vertx.java.core.json.JsonObject;
 
 import com.datastax.driver.core.BatchStatement;
-import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.ColumnDefinitions;
 import com.datastax.driver.core.Host;
@@ -71,9 +70,7 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 	/** The query options (e.g. fetch size) for this connection */
 	private QueryOptions queryOptions = new QueryOptions();
 
-	/**
-	 * The formatter (default pattern: dd-MM-yyyy HH:mm:ss) used to convert String dates to Date instances
-	 */
+	/** The formatter (default pattern: dd-MM-yyyy HH:mm:ss) used to convert String dates to Date instances */
 	private SimpleDateFormat dateFormatter;
 
 	/** Only supporting Cassandra > 2 */
@@ -104,9 +101,9 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 		getQueryOptions().setFetchSize(getOptionalIntConfig("fetchSize", QueryOptions.DEFAULT_FETCH_SIZE));
 		setDateFormatter(new SimpleDateFormat(getOptionalStringConfig("dateFormat", "dd-MM-yyyy HH:mm:ss")));
 
-        final Cache<String, PreparedStatement> cache = CacheBuilder.newBuilder()
-                .maximumSize(getOptionalIntConfig("prepStmtCacheSize", Integer.MAX_VALUE))
-                .build();
+		final Cache<String, PreparedStatement> cache = CacheBuilder.newBuilder()
+				.maximumSize(getOptionalIntConfig("prepStmtCacheSize", Integer.MAX_VALUE))
+				.build();
 
 		setPreparedStatementCache(cache);
 
@@ -138,7 +135,7 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 			builder.withProtocolVersion(PROTOCOL_VERSION);
 			//
 			setCluster(builder.build());
-		} catch(Exception e) {
+		} catch(final Exception e) {
 			logger.error("[Cassandra Persistor] Cannot add hosts " + getHosts(), e);
 			return;
 		}
@@ -153,15 +150,17 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 				logger.info("[Cassandra Persistor] DC: " + host.getDatacenter() + " - Host: " + host.getAddress() + " - Rack: " + host.getRack());
 			}
 
+			//Get Session and add it to Cache
 			setSession(getCluster().connect());
-
-		} catch(Exception e) {
+		} catch(final Exception e) {
 			logger.error("[Cassandra Persistor] Cannot connect/get session from Cassandra!", e);
 			return;
 		}
 
 		//
 		eb.registerHandler(getAddress(), this);
+		//
+		container.deployWorkerVerticle(BatchActionsProcessor.class.getName(), container.config());
 
 		//
 		logger.info("[Cassandra Persistor] ...booted!");
@@ -223,12 +222,12 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 
 		//
 		PreparedStatement preparedStmt = getPreparedStatementCache().get(statement,
-                new Callable<PreparedStatement>() {
-            @Override
-            public PreparedStatement call() throws Exception {
-                return getSession().prepare(statement);
-            }
-        });
+				new Callable<PreparedStatement>() {
+					@Override
+					public PreparedStatement call() throws Exception {
+						return getSession().prepare(statement);
+					}
+				});
 
 		//
 		BatchStatement query = new BatchStatement();
@@ -237,10 +236,9 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 			//
 			JsonArray valueList = values.get(i);
 			//
-			BoundStatement boundStmt = preparedStmt.bind();
-			query.add(boundStmt.bind(parseArray(valueList.toArray())));
+			query.add(preparedStmt.bind(parseArray(valueList.toArray())));
 		}
-
+				
 		//
 		if(statement.trim().toLowerCase().startsWith("select")) {
 			//
@@ -278,16 +276,15 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 
 		try {
 			if(prepareMessage.containsField("statement")) {
-                final String statement = prepareMessage.getString("statement");
+				final String statement = prepareMessage.getString("statement");
 				getPreparedStatementCache().put(statement, session.prepare(statement));
 			} else {
 				// Note: If more statements than cache size are entered, the
 				// ladder will replace the earlier
-                for (final String statement: (List<String>) prepareMessage.getArray("statements").toList()) {
-                    getPreparedStatementCache().put(statement, session.prepare(statement));
-                }
+				for (final String statement: (List<String>) prepareMessage.getArray("statements").toList()) {
+					getPreparedStatementCache().put(statement, session.prepare(statement));
+				}
 			}
-
 		} catch(Exception e) {
 			// An error happened
 			sendError(message, "[Cassandra Persistor] Could not prepare query/ies from " + prepareMessage + "!", e);
@@ -627,6 +624,10 @@ public class CassandraPersistor extends BusModBase implements Handler<Message<Js
 	 */
 	public void setSession(Session session) {
 		this.session = session;
+
+		// Add the newest sessions always as source for prepared statements to
+		// the cache
+		// getPreparedStatementCache().setSession(session);
 	}
 
 	public String getAddress() {
